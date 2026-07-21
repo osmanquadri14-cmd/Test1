@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lease Mileage Tracker</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Lease Mileage Tracker</h1>
+    <button id="settingsToggle" class="ghost-btn" type="button">Lease settings</button>
+  </header>
+
+  <section id="settingsPanel" class="card hidden">
+    <h2>Lease settings</h2>
+    <form id="settingsForm" class="grid-form">
+      <label>
+        Lease start date
+        <input type="date" id="leaseStart" required>
+      </label>
+      <label>
+        Lease end date
+        <input type="date" id="leaseEnd" required>
+      </label>
+      <label>
+        Starting odometer
+        <input type="number" id="leaseStartMiles" min="0" step="1" required>
+      </label>
+      <label>
+        Total allowed miles
+        <input type="number" id="leaseAllowance" min="0" step="1" required>
+      </label>
+      <div class="form-actions">
+        <button type="submit" class="primary-btn">Save settings</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="stats" id="stats"></section>
+
+  <section class="card">
+    <h2>Add a mileage mark</h2>
+    <form id="entryForm" class="grid-form">
+      <label>
+        Date
+        <input type="date" id="entryDate" required>
+      </label>
+      <label>
+        Odometer reading (miles)
+        <input type="number" id="entryMiles" min="0" step="1" required>
+      </label>
+      <label class="full">
+        Note (optional)
+        <input type="text" id="entryNote" placeholder="e.g. road trip, oil change">
+      </label>
+      <div class="form-actions">
+        <button type="submit" class="primary-btn">Save mileage</button>
+      </div>
+    </form>
+    <p id="entryError" class="error hidden"></p>
+  </section>
+
+  <section class="card">
+    <h2>History</h2>
+    <div id="historyEmpty" class="empty hidden">No entries yet. Add your first mileage mark above.</div>
+    <div class="table-wrap">
+      <table id="historyTable" class="hidden">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Odometer</th>
+            <th>Miles since last</th>
+            <th>Note</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
