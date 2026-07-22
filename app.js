@@ -107,7 +107,6 @@ function renderStats() {
   const daysElapsed = Math.min(totalLeaseDays, Math.max(0, daysBetween(settings.startDate, today)));
   const daysRemaining = Math.max(0, daysBetween(today, settings.endDate));
 
-  const allowedPace = effectiveAllowance / totalLeaseDays;
   const currentPace = daysElapsed > 0 ? milesDriven / daysElapsed : 0;
   const projectedTotal = currentPace * totalLeaseDays;
   const projectedDiff = effectiveAllowance - projectedTotal;
@@ -121,8 +120,6 @@ function renderStats() {
     )
   );
   statsEl.appendChild(statTile("Days remaining", daysRemaining.toLocaleString()));
-  statsEl.appendChild(statTile("Allowed pace", `${allowedPace.toFixed(1)} mi/day`));
-  statsEl.appendChild(statTile("Current pace", `${currentPace.toFixed(1)} mi/day`));
   statsEl.appendChild(
     statTile(
       "Projected end total",
