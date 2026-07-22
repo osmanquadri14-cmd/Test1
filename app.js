@@ -1,21 +1,21 @@
-const SETTINGS_KEY = "ccPaydownTracker.settings";
-const ENTRIES_KEY = "ccPaydownTracker.entries";
-const PROJECTION_LOOKBACK = 8;
-const MAX_PROJECTION_WEEKS = 260; // 5 years safety cap
+const SETTINGS_KEY = "leaseMileageTracker.settings";
+const ENTRIES_KEY = "leaseMileageTracker.entries";
+const PURCHASES_KEY = "leaseMileageTracker.purchases";
+const PURCHASE_MILES = 1000;
+const PURCHASE_COST = 250;
 
 const settingsToggle = document.getElementById("settingsToggle");
 const settingsPanel = document.getElementById("settingsPanel");
 const settingsForm = document.getElementById("settingsForm");
-const startBalanceInput = document.getElementById("startBalance");
-const startDateInput = document.getElementById("startDate");
-const startAprInput = document.getElementById("startApr");
+const leaseStartInput = document.getElementById("leaseStart");
+const leaseEndInput = document.getElementById("leaseEnd");
+const leaseStartMilesInput = document.getElementById("leaseStartMiles");
+const leaseAllowanceInput = document.getElementById("leaseAllowance");
 
 const entryForm = document.getElementById("entryForm");
 const entryDateInput = document.getElementById("entryDate");
-const entryIncomeInput = document.getElementById("entryIncome");
-const entryBillsInput = document.getElementById("entryBills");
-const entryExpensesInput = document.getElementById("entryExpenses");
-const suggestedPaymentEl = document.getElementById("suggestedPayment");
+const entryMilesInput = document.getElementById("entryMiles");
+const entryNoteInput = document.getElementById("entryNote");
 const entryError = document.getElementById("entryError");
 
 const statsEl = document.getElementById("stats");
@@ -23,13 +23,10 @@ const historyBody = document.getElementById("historyBody");
 const historyTable = document.getElementById("historyTable");
 const historyEmpty = document.getElementById("historyEmpty");
 
-const chartLegend = document.getElementById("chartLegend");
-const chartCanvas = document.getElementById("burndownChart");
-const chartTooltip = document.getElementById("chartTooltip");
-const chartEmpty = document.getElementById("chartEmpty");
-const chartCtx = chartCanvas.getContext("2d");
-
-let hoverSeries = [];
+const buyMilesBtn = document.getElementById("buyMilesBtn");
+const purchasesBody = document.getElementById("purchasesBody");
+const purchasesTable = document.getElementById("purchasesTable");
+const purchasesEmpty = document.getElementById("purchasesEmpty");
 
 function loadSettings() {
   const raw = localStorage.getItem(SETTINGS_KEY);
@@ -55,39 +52,31 @@ function sortedEntries() {
     .sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id);
 }
 
+function loadPurchases() {
+  const raw = localStorage.getItem(PURCHASES_KEY);
+  return raw ? JSON.parse(raw) : [];
+}
+
+function savePurchases(purchases) {
+  localStorage.setItem(PURCHASES_KEY, JSON.stringify(purchases));
+}
+
+function totalPurchasedMiles() {
+  return loadPurchases().reduce((sum, p) => sum + p.miles, 0);
+}
+
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function addDays(iso, days) {
-  const d = new Date(iso + "T00:00:00");
-  d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+function daysBetween(dateA, dateB) {
+  const msPerDay = 1000 * 60 * 60 * 24;
+  return Math.round((new Date(dateB) - new Date(dateA)) / msPerDay);
 }
 
 function formatDate(iso) {
   const d = new Date(iso + "T00:00:00");
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-}
-
-function formatShortDate(iso) {
-  const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function formatMonthYear(iso) {
-  const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short" });
-}
-
-function formatCurrency(n) {
-  return n.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
-}
-
-function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
 }
 
 function statTile(label, value, tone) {
@@ -97,92 +86,52 @@ function statTile(label, value, tone) {
   return div;
 }
 
-// Computes the enriched weekly series from settings + raw entries.
-// Returns null if settings haven't been configured yet.
-function computeSeries() {
-  const settings = loadSettings();
-  if (!settings) return null;
-
-  const weeklyRate = (settings.apr || 0) / 100 / 52;
-  let balance = settings.startBalance;
-
-  const points = [{ date: settings.startDate, balance }];
-  const entries = sortedEntries().map((e) => {
-    const interest = balance * weeklyRate;
-    const leftover = e.income - e.bills - e.expenses;
-    const payment = Math.max(0, leftover);
-    balance = Math.max(0, balance + interest - payment);
-    points.push({ date: e.date, balance });
-    return { ...e, leftover, payment, interest, balance };
-  });
-
-  return { settings, entries, points };
-}
-
-function projectFuture(points, entries) {
-  if (points.length < 2) return [];
-  const lookback = entries.slice(-PROJECTION_LOOKBACK);
-  if (!lookback.length) return [];
-
-  const avgReduction =
-    lookback.reduce((sum, e) => sum + (e.leftover > 0 ? e.payment - e.interest : -e.interest), 0) / lookback.length;
-
-  if (avgReduction <= 0) return [];
-
-  const last = points[points.length - 1];
-  if (last.balance <= 0) return [];
-
-  const projected = [last];
-  let balance = last.balance;
-  let date = last.date;
-  let weeks = 0;
-  while (balance > 0 && weeks < MAX_PROJECTION_WEEKS) {
-    balance = Math.max(0, balance - avgReduction);
-    date = addDays(date, 7);
-    weeks += 1;
-    projected.push({ date, balance });
-  }
-  return projected;
-}
-
 function renderStats() {
   statsEl.innerHTML = "";
-  const series = computeSeries();
+  const settings = loadSettings();
+  const entries = sortedEntries();
 
-  if (!series) {
-    statsEl.appendChild(statTile("Card setup", "Not configured", "warn"));
+  if (!settings) {
+    statsEl.appendChild(statTile("Lease setup", "Not configured", "warn"));
     return;
   }
 
-  const { entries, points } = series;
-  const currentBalance = points[points.length - 1].balance;
-  const totalPaid = entries.reduce((sum, e) => sum + e.payment, 0);
-  const totalInterest = entries.reduce((sum, e) => sum + e.interest, 0);
+  const latest = entries.length ? entries[entries.length - 1] : null;
+  const currentMiles = latest ? latest.miles : settings.startMiles;
+  const milesDriven = Math.max(0, currentMiles - settings.startMiles);
+  const effectiveAllowance = settings.allowance + totalPurchasedMiles();
+  const milesRemaining = effectiveAllowance - milesDriven;
 
+  const totalLeaseDays = Math.max(1, daysBetween(settings.startDate, settings.endDate));
+  const today = todayISO();
+  const daysElapsed = Math.min(totalLeaseDays, Math.max(0, daysBetween(settings.startDate, today)));
+  const daysRemaining = Math.max(0, daysBetween(today, settings.endDate));
+
+  const currentPace = daysElapsed > 0 ? milesDriven / daysElapsed : 0;
+  const projectedTotal = currentPace * totalLeaseDays;
+  const projectedDiff = effectiveAllowance - projectedTotal;
+
+  statsEl.appendChild(statTile("Miles driven", milesDriven.toLocaleString()));
   statsEl.appendChild(
-    statTile("Current balance", formatCurrency(currentBalance), currentBalance <= 0 ? "good" : "bad")
+    statTile(
+      "Miles remaining",
+      milesRemaining.toLocaleString(),
+      milesRemaining < 0 ? "bad" : milesRemaining < effectiveAllowance * 0.1 ? "warn" : "good"
+    )
   );
-  statsEl.appendChild(statTile("Total paid", formatCurrency(totalPaid)));
-  statsEl.appendChild(statTile("Interest accrued", formatCurrency(totalInterest), totalInterest > 0 ? "warn" : ""));
-
-  if (currentBalance <= 0 && entries.length) {
-    statsEl.appendChild(statTile("Payoff", "Paid off!", "good"));
-  } else {
-    const projected = projectFuture(points, entries);
-    if (projected.length > 1) {
-      const payoffDate = projected[projected.length - 1].date;
-      statsEl.appendChild(statTile("Projected payoff", formatMonthYear(payoffDate), "good"));
-    } else {
-      statsEl.appendChild(statTile("Projected payoff", "Add payments", "warn"));
-    }
-  }
+  statsEl.appendChild(statTile("Days remaining", daysRemaining.toLocaleString()));
+  statsEl.appendChild(
+    statTile(
+      "Projected end total",
+      `${Math.round(projectedTotal).toLocaleString()} mi`,
+      projectedDiff < 0 ? "bad" : projectedDiff < effectiveAllowance * 0.05 ? "warn" : "good"
+    )
+  );
 }
 
 function renderHistory() {
-  const series = computeSeries();
+  const entries = sortedEntries();
   historyBody.innerHTML = "";
-
-  const entries = series ? series.entries : [];
 
   if (!entries.length) {
     historyEmpty.classList.remove("hidden");
@@ -193,23 +142,22 @@ function renderHistory() {
   historyEmpty.classList.add("hidden");
   historyTable.classList.remove("hidden");
 
-  entries
-    .slice()
-    .reverse()
-    .forEach((entry) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${formatDate(entry.date)}</td>
-        <td>${formatCurrency(entry.income)}</td>
-        <td>${formatCurrency(entry.bills)}</td>
-        <td>${formatCurrency(entry.expenses)}</td>
-        <td>${formatCurrency(entry.payment)}</td>
-        <td>${formatCurrency(entry.interest)}</td>
-        <td>${formatCurrency(entry.balance)}</td>
-        <td><button class="delete-btn" data-id="${entry.id}">Delete</button></td>
-      `;
-      historyBody.appendChild(tr);
-    });
+  const display = entries.slice().reverse();
+  display.forEach((entry, idx) => {
+    const chronoIndex = entries.length - 1 - idx;
+    const prev = chronoIndex > 0 ? entries[chronoIndex - 1] : null;
+    const delta = prev ? entry.miles - prev.miles : "–";
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${formatDate(entry.date)}</td>
+      <td>${entry.miles.toLocaleString()}</td>
+      <td>${typeof delta === "number" ? delta.toLocaleString() : delta}</td>
+      <td>${entry.note ? escapeHtml(entry.note) : ""}</td>
+      <td><button class="delete-btn" data-id="${entry.id}">Delete</button></td>
+    `;
+    historyBody.appendChild(tr);
+  });
 
   historyBody.querySelectorAll(".delete-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -221,226 +169,61 @@ function renderHistory() {
   });
 }
 
-function cssVar(name) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-}
+function renderPurchases() {
+  const purchases = loadPurchases();
+  purchasesBody.innerHTML = "";
 
-function niceMax(value) {
-  if (value <= 0) return 100;
-  const magnitude = Math.pow(10, Math.floor(Math.log10(value)));
-  const steps = [1, 2, 2.5, 5, 10];
-  for (const step of steps) {
-    const candidate = step * magnitude;
-    if (candidate >= value) return candidate;
-  }
-  return 10 * magnitude;
-}
-
-function renderChart() {
-  const series = computeSeries();
-  hoverSeries = [];
-  chartLegend.innerHTML = "";
-
-  if (!series || series.entries.length === 0) {
-    chartCanvas.classList.add("hidden");
-    chartEmpty.classList.remove("hidden");
+  if (!purchases.length) {
+    purchasesEmpty.classList.remove("hidden");
+    purchasesTable.classList.add("hidden");
     return;
   }
 
-  chartCanvas.classList.remove("hidden");
-  chartEmpty.classList.add("hidden");
+  purchasesEmpty.classList.add("hidden");
+  purchasesTable.classList.remove("hidden");
 
-  const { points, entries } = series;
-  const projected = projectFuture(points, entries);
-
-  chartLegend.innerHTML = `
-    <span class="legend-item"><span class="legend-swatch solid"></span>Actual</span>
-    ${projected.length > 1 ? '<span class="legend-item"><span class="legend-swatch dashed"></span>Projected</span>' : ""}
-  `;
-
-  const dpr = window.devicePixelRatio || 1;
-  const rect = chartCanvas.getBoundingClientRect();
-  const width = Math.max(1, rect.width);
-  const height = Math.max(1, rect.height);
-  chartCanvas.width = width * dpr;
-  chartCanvas.height = height * dpr;
-  chartCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  chartCtx.clearRect(0, 0, width, height);
-
-  const padding = { top: 16, right: 16, bottom: 28, left: 56 };
-  const plotW = width - padding.left - padding.right;
-  const plotH = height - padding.top - padding.bottom;
-
-  const allPoints = points.concat(projected.slice(1));
-  const minTime = new Date(allPoints[0].date + "T00:00:00").getTime();
-  const maxTime = new Date(allPoints[allPoints.length - 1].date + "T00:00:00").getTime();
-  const timeSpan = Math.max(1, maxTime - minTime);
-
-  const maxBalance = niceMax(Math.max(series.settings.startBalance, ...allPoints.map((p) => p.balance)));
-
-  const xForTime = (t) => padding.left + ((t - minTime) / timeSpan) * plotW;
-  const xForDate = (iso) => xForTime(new Date(iso + "T00:00:00").getTime());
-  const yForBalance = (b) => padding.top + plotH - (b / maxBalance) * plotH;
-
-  const text = cssVar("--text");
-  const muted = cssVar("--muted");
-  const border = cssVar("--border");
-  const accent = cssVar("--accent");
-  const accentRgb = cssVar("--accent-rgb");
-  const cardBg = cssVar("--card-bg");
-
-  // Gridlines + y-axis labels
-  chartCtx.font = "11px -apple-system, BlinkMacSystemFont, sans-serif";
-  chartCtx.fillStyle = muted;
-  chartCtx.strokeStyle = border;
-  chartCtx.lineWidth = 1;
-  const ySteps = 4;
-  for (let i = 0; i <= ySteps; i++) {
-    const value = (maxBalance / ySteps) * i;
-    const y = yForBalance(value);
-    chartCtx.beginPath();
-    chartCtx.moveTo(padding.left, y);
-    chartCtx.lineTo(width - padding.right, y);
-    chartCtx.stroke();
-    chartCtx.textAlign = "right";
-    chartCtx.textBaseline = "middle";
-    chartCtx.fillText(formatCurrency(value).replace(".00", ""), padding.left - 8, y);
-  }
-
-  // X-axis labels: first point, last actual point, last projected point
-  chartCtx.textAlign = "center";
-  chartCtx.textBaseline = "top";
-  const xLabelY = height - padding.bottom + 8;
-  const firstPoint = points[0];
-  const lastActual = points[points.length - 1];
-  chartCtx.fillText(formatShortDate(firstPoint.date), xForDate(firstPoint.date), xLabelY);
-  if (lastActual.date !== firstPoint.date) {
-    chartCtx.fillText(formatShortDate(lastActual.date), xForDate(lastActual.date), xLabelY);
-  }
-  if (projected.length > 1) {
-    const lastProjected = projected[projected.length - 1];
-    chartCtx.fillText(formatShortDate(lastProjected.date), xForDate(lastProjected.date), xLabelY);
-  }
-
-  // Area fill under actual line
-  chartCtx.beginPath();
-  chartCtx.moveTo(xForDate(points[0].date), yForBalance(0));
-  points.forEach((p) => chartCtx.lineTo(xForDate(p.date), yForBalance(p.balance)));
-  chartCtx.lineTo(xForDate(points[points.length - 1].date), yForBalance(0));
-  chartCtx.closePath();
-  chartCtx.fillStyle = `rgba(${accentRgb}, 0.1)`;
-  chartCtx.fill();
-
-  // Actual line
-  chartCtx.beginPath();
-  chartCtx.lineWidth = 2;
-  chartCtx.lineJoin = "round";
-  chartCtx.lineCap = "round";
-  chartCtx.strokeStyle = accent;
-  points.forEach((p, i) => {
-    const x = xForDate(p.date);
-    const y = yForBalance(p.balance);
-    if (i === 0) chartCtx.moveTo(x, y);
-    else chartCtx.lineTo(x, y);
-  });
-  chartCtx.stroke();
-
-  // Actual markers
-  points.forEach((p) => {
-    const x = xForDate(p.date);
-    const y = yForBalance(p.balance);
-    chartCtx.beginPath();
-    chartCtx.arc(x, y, 4, 0, Math.PI * 2);
-    chartCtx.fillStyle = cardBg;
-    chartCtx.fill();
-    chartCtx.beginPath();
-    chartCtx.arc(x, y, 4, 0, Math.PI * 2);
-    chartCtx.fillStyle = accent;
-    chartCtx.fill();
-    chartCtx.lineWidth = 2;
-    chartCtx.strokeStyle = cardBg;
-    chartCtx.stroke();
-  });
-
-  // Projected dashed line
-  if (projected.length > 1) {
-    chartCtx.beginPath();
-    chartCtx.setLineDash([5, 4]);
-    chartCtx.lineWidth = 2;
-    chartCtx.strokeStyle = muted;
-    projected.forEach((p, i) => {
-      const x = xForDate(p.date);
-      const y = yForBalance(p.balance);
-      if (i === 0) chartCtx.moveTo(x, y);
-      else chartCtx.lineTo(x, y);
+  purchases
+    .slice()
+    .reverse()
+    .forEach((purchase) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${formatDate(purchase.date)}</td>
+        <td>${purchase.miles.toLocaleString()}</td>
+        <td>$${purchase.cost.toLocaleString()}</td>
+        <td><button class="delete-btn" data-id="${purchase.id}">Undo</button></td>
+      `;
+      purchasesBody.appendChild(tr);
     });
-    chartCtx.stroke();
-    chartCtx.setLineDash([]);
-  }
 
-  // End label: current balance value at end of actual line
-  const endX = xForDate(lastActual.date);
-  const endY = yForBalance(lastActual.balance);
-  chartCtx.textAlign = "left";
-  chartCtx.textBaseline = "bottom";
-  chartCtx.fillStyle = text;
-  chartCtx.font = "600 12px -apple-system, BlinkMacSystemFont, sans-serif";
-  const labelX = Math.min(endX + 8, width - padding.right - 60);
-  chartCtx.fillText(formatCurrency(lastActual.balance), labelX, endY - 6);
-
-  hoverSeries = allPoints.map((p) => ({ x: xForDate(p.date), date: p.date, balance: p.balance }));
+  purchasesBody.querySelectorAll(".delete-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = Number(btn.dataset.id);
+      const remaining = loadPurchases().filter((p) => p.id !== id);
+      savePurchases(remaining);
+      renderAll();
+    });
+  });
 }
 
-function handleChartHover(evt) {
-  if (!hoverSeries.length) return;
-  const rect = chartCanvas.getBoundingClientRect();
-  const x = evt.clientX - rect.left;
-
-  let nearest = hoverSeries[0];
-  let nearestDist = Math.abs(nearest.x - x);
-  for (const point of hoverSeries) {
-    const dist = Math.abs(point.x - x);
-    if (dist < nearestDist) {
-      nearest = point;
-      nearestDist = dist;
-    }
-  }
-
-  chartTooltip.innerHTML = `<div class="tt-date">${formatDate(nearest.date)}</div><div class="tt-value">${formatCurrency(nearest.balance)}</div>`;
-  chartTooltip.style.left = `${nearest.x}px`;
-  chartTooltip.style.top = `0px`;
-  chartTooltip.classList.remove("hidden");
-}
-
-function hideChartTooltip() {
-  chartTooltip.classList.add("hidden");
-}
-
-function updateSuggestedPayment() {
-  const income = Number(entryIncomeInput.value) || 0;
-  const bills = Number(entryBillsInput.value) || 0;
-  const expenses = Number(entryExpensesInput.value) || 0;
-  const leftover = income - bills - expenses;
-  const payment = Math.max(0, leftover);
-
-  if (leftover < 0) {
-    suggestedPaymentEl.textContent = `Applied to card: $0.00 (short by ${formatCurrency(-leftover)} this week)`;
-  } else {
-    suggestedPaymentEl.textContent = `Applied to card: ${formatCurrency(payment)}`;
-  }
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
 }
 
 function renderAll() {
   renderStats();
   renderHistory();
-  renderChart();
+  renderPurchases();
 }
 
 function fillSettingsForm(settings) {
   if (!settings) return;
-  startBalanceInput.value = settings.startBalance;
-  startDateInput.value = settings.startDate;
-  startAprInput.value = settings.apr;
+  leaseStartInput.value = settings.startDate;
+  leaseEndInput.value = settings.endDate;
+  leaseStartMilesInput.value = settings.startMiles;
+  leaseAllowanceInput.value = settings.allowance;
 }
 
 settingsToggle.addEventListener("click", () => {
@@ -450,54 +233,45 @@ settingsToggle.addEventListener("click", () => {
 settingsForm.addEventListener("submit", (e) => {
   e.preventDefault();
   const settings = {
-    startBalance: Number(startBalanceInput.value),
-    startDate: startDateInput.value,
-    apr: Number(startAprInput.value) || 0,
+    startDate: leaseStartInput.value,
+    endDate: leaseEndInput.value,
+    startMiles: Number(leaseStartMilesInput.value),
+    allowance: Number(leaseAllowanceInput.value),
   };
   saveSettings(settings);
   settingsPanel.classList.add("hidden");
   renderAll();
 });
 
-[entryIncomeInput, entryBillsInput, entryExpensesInput].forEach((input) => {
-  input.addEventListener("input", updateSuggestedPayment);
-});
-
 entryForm.addEventListener("submit", (e) => {
   e.preventDefault();
   entryError.classList.add("hidden");
 
-  if (!loadSettings()) {
-    entryError.textContent = "Set up your card settings first.";
-    entryError.classList.remove("hidden");
-    settingsPanel.classList.remove("hidden");
-    return;
-  }
-
   const date = entryDateInput.value;
-  const income = Number(entryIncomeInput.value);
-  const bills = Number(entryBillsInput.value);
-  const expenses = Number(entryExpensesInput.value);
+  const miles = Number(entryMilesInput.value);
+  const note = entryNoteInput.value.trim();
 
-  if (!date || [income, bills, expenses].some((n) => Number.isNaN(n) || n < 0)) {
-    entryError.textContent = "Enter a valid date and non-negative amounts.";
+  if (!date || Number.isNaN(miles) || miles < 0) {
+    entryError.textContent = "Enter a valid date and a non-negative odometer reading.";
     entryError.classList.remove("hidden");
     return;
   }
 
   const entries = loadEntries();
-  entries.push({ id: Date.now(), date, income, bills, expenses });
+  entries.push({ id: Date.now(), date, miles, note });
   saveEntries(entries);
 
   entryForm.reset();
   entryDateInput.value = todayISO();
-  updateSuggestedPayment();
   renderAll();
 });
 
-chartCanvas.addEventListener("mousemove", handleChartHover);
-chartCanvas.addEventListener("mouseleave", hideChartTooltip);
-window.addEventListener("resize", () => renderChart());
+buyMilesBtn.addEventListener("click", () => {
+  const purchases = loadPurchases();
+  purchases.push({ id: Date.now(), date: todayISO(), miles: PURCHASE_MILES, cost: PURCHASE_COST });
+  savePurchases(purchases);
+  renderAll();
+});
 
 function init() {
   entryDateInput.value = todayISO();
@@ -506,9 +280,7 @@ function init() {
     fillSettingsForm(settings);
   } else {
     settingsPanel.classList.remove("hidden");
-    startDateInput.value = todayISO();
   }
-  updateSuggestedPayment();
   renderAll();
 }
 
