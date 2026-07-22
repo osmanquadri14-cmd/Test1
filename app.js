@@ -1,5 +1,8 @@
 const SETTINGS_KEY = "leaseMileageTracker.settings";
 const ENTRIES_KEY = "leaseMileageTracker.entries";
+const PURCHASES_KEY = "leaseMileageTracker.purchases";
+const PURCHASE_MILES = 1000;
+const PURCHASE_COST = 250;
 
 const settingsToggle = document.getElementById("settingsToggle");
 const settingsPanel = document.getElementById("settingsPanel");
@@ -19,6 +22,11 @@ const statsEl = document.getElementById("stats");
 const historyBody = document.getElementById("historyBody");
 const historyTable = document.getElementById("historyTable");
 const historyEmpty = document.getElementById("historyEmpty");
+
+const buyMilesBtn = document.getElementById("buyMilesBtn");
+const purchasesBody = document.getElementById("purchasesBody");
+const purchasesTable = document.getElementById("purchasesTable");
+const purchasesEmpty = document.getElementById("purchasesEmpty");
 
 function loadSettings() {
   const raw = localStorage.getItem(SETTINGS_KEY);
@@ -42,6 +50,19 @@ function sortedEntries() {
   return loadEntries()
     .slice()
     .sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id);
+}
+
+function loadPurchases() {
+  const raw = localStorage.getItem(PURCHASES_KEY);
+  return raw ? JSON.parse(raw) : [];
+}
+
+function savePurchases(purchases) {
+  localStorage.setItem(PURCHASES_KEY, JSON.stringify(purchases));
+}
+
+function totalPurchasedMiles() {
+  return loadPurchases().reduce((sum, p) => sum + p.miles, 0);
 }
 
 function todayISO() {
@@ -78,24 +99,25 @@ function renderStats() {
   const latest = entries.length ? entries[entries.length - 1] : null;
   const currentMiles = latest ? latest.miles : settings.startMiles;
   const milesDriven = Math.max(0, currentMiles - settings.startMiles);
-  const milesRemaining = settings.allowance - milesDriven;
+  const effectiveAllowance = settings.allowance + totalPurchasedMiles();
+  const milesRemaining = effectiveAllowance - milesDriven;
 
   const totalLeaseDays = Math.max(1, daysBetween(settings.startDate, settings.endDate));
   const today = todayISO();
   const daysElapsed = Math.min(totalLeaseDays, Math.max(0, daysBetween(settings.startDate, today)));
   const daysRemaining = Math.max(0, daysBetween(today, settings.endDate));
 
-  const allowedPace = settings.allowance / totalLeaseDays;
+  const allowedPace = effectiveAllowance / totalLeaseDays;
   const currentPace = daysElapsed > 0 ? milesDriven / daysElapsed : 0;
   const projectedTotal = currentPace * totalLeaseDays;
-  const projectedDiff = settings.allowance - projectedTotal;
+  const projectedDiff = effectiveAllowance - projectedTotal;
 
   statsEl.appendChild(statTile("Miles driven", milesDriven.toLocaleString()));
   statsEl.appendChild(
     statTile(
       "Miles remaining",
       milesRemaining.toLocaleString(),
-      milesRemaining < 0 ? "bad" : milesRemaining < settings.allowance * 0.1 ? "warn" : "good"
+      milesRemaining < 0 ? "bad" : milesRemaining < effectiveAllowance * 0.1 ? "warn" : "good"
     )
   );
   statsEl.appendChild(statTile("Days remaining", daysRemaining.toLocaleString()));
@@ -105,7 +127,7 @@ function renderStats() {
     statTile(
       "Projected end total",
       `${Math.round(projectedTotal).toLocaleString()} mi`,
-      projectedDiff < 0 ? "bad" : projectedDiff < settings.allowance * 0.05 ? "warn" : "good"
+      projectedDiff < 0 ? "bad" : projectedDiff < effectiveAllowance * 0.05 ? "warn" : "good"
     )
   );
 }
@@ -150,6 +172,43 @@ function renderHistory() {
   });
 }
 
+function renderPurchases() {
+  const purchases = loadPurchases();
+  purchasesBody.innerHTML = "";
+
+  if (!purchases.length) {
+    purchasesEmpty.classList.remove("hidden");
+    purchasesTable.classList.add("hidden");
+    return;
+  }
+
+  purchasesEmpty.classList.add("hidden");
+  purchasesTable.classList.remove("hidden");
+
+  purchases
+    .slice()
+    .reverse()
+    .forEach((purchase) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${formatDate(purchase.date)}</td>
+        <td>${purchase.miles.toLocaleString()}</td>
+        <td>$${purchase.cost.toLocaleString()}</td>
+        <td><button class="delete-btn" data-id="${purchase.id}">Undo</button></td>
+      `;
+      purchasesBody.appendChild(tr);
+    });
+
+  purchasesBody.querySelectorAll(".delete-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = Number(btn.dataset.id);
+      const remaining = loadPurchases().filter((p) => p.id !== id);
+      savePurchases(remaining);
+      renderAll();
+    });
+  });
+}
+
 function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = str;
@@ -159,6 +218,7 @@ function escapeHtml(str) {
 function renderAll() {
   renderStats();
   renderHistory();
+  renderPurchases();
 }
 
 function fillSettingsForm(settings) {
@@ -206,6 +266,13 @@ entryForm.addEventListener("submit", (e) => {
 
   entryForm.reset();
   entryDateInput.value = todayISO();
+  renderAll();
+});
+
+buyMilesBtn.addEventListener("click", () => {
+  const purchases = loadPurchases();
+  purchases.push({ id: Date.now(), date: todayISO(), miles: PURCHASE_MILES, cost: PURCHASE_COST });
+  savePurchases(purchases);
   renderAll();
 });
 

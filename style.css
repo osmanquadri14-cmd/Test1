@@ -109,6 +109,16 @@ input:focus {
   justify-content: flex-end;
 }
 
+.form-actions.align-start {
+  justify-content: flex-start;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0 0 14px;
+}
+
 .primary-btn {
   background: var(--accent);
   color: #fff;
