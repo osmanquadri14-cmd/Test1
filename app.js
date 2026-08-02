@@ -283,7 +283,7 @@ buyMilesBtn.addEventListener("click", () => {
 // Fill in your own OAuth Client ID from Google Cloud Console (see setup steps
 // in the project README). Files are stored with the narrow "drive.file"
 // scope, so this app can only see files it creates itself.
-const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID = "11908733287-cm8pgih380qlm2lahepntsdsmcpd964t.apps.googleusercontent.com";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const DRIVE_FILE_NAME = "lease-mileage-tracker-data.json";
 
@@ -300,10 +300,16 @@ function isGoogleConfigured() {
   return !GOOGLE_CLIENT_ID.startsWith("YOUR_");
 }
 
-function initGoogleAuth() {
+function initGoogleAuth(attempt) {
+  attempt = attempt || 0;
   if (!isGoogleConfigured()) return;
   if (!window.google || !google.accounts || !google.accounts.oauth2) {
-    setTimeout(initGoogleAuth, 200);
+    if (attempt >= 50) {
+      setSyncStatus("Google sign-in unavailable (script blocked?)");
+      googleSignInBtn.disabled = true;
+      return;
+    }
+    setTimeout(() => initGoogleAuth(attempt + 1), 200);
     return;
   }
   driveTokenClient = google.accounts.oauth2.initTokenClient({
