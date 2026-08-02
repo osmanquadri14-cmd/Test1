@@ -286,11 +286,13 @@ buyMilesBtn.addEventListener("click", () => {
 const GOOGLE_CLIENT_ID = "11908733287-cm8pgih380qlm2lahepntsdsmcpd964t.apps.googleusercontent.com";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const DRIVE_FILE_NAME = "lease-mileage-tracker-data.json";
+const DRIVE_SIGNED_IN_KEY = "leaseMileageTracker.driveSignedIn";
 
 let driveAccessToken = null;
 let driveFileId = null;
 let driveTokenClient = null;
 let driveSyncTimer = null;
+let driveSilentAttempt = false;
 
 function setSyncStatus(text) {
   syncStatusEl.textContent = text;
@@ -316,11 +318,16 @@ function initGoogleAuth(attempt) {
     client_id: GOOGLE_CLIENT_ID,
     scope: DRIVE_SCOPE,
     callback: async (response) => {
+      const wasSilent = driveSilentAttempt;
+      driveSilentAttempt = false;
       if (response.error) {
-        setSyncStatus("Google sign-in failed");
+        if (!wasSilent) setSyncStatus("Google sign-in failed");
+        else setSyncStatus("Not signed in (local only)");
+        localStorage.removeItem(DRIVE_SIGNED_IN_KEY);
         return;
       }
       driveAccessToken = response.access_token;
+      localStorage.setItem(DRIVE_SIGNED_IN_KEY, "true");
       googleSignInBtn.textContent = "Sign out";
       setSyncStatus("Syncing…");
       try {
@@ -331,6 +338,11 @@ function initGoogleAuth(attempt) {
       }
     },
   });
+
+  if (localStorage.getItem(DRIVE_SIGNED_IN_KEY) === "true") {
+    driveSilentAttempt = true;
+    driveTokenClient.requestAccessToken({ prompt: "" });
+  }
 }
 
 async function driveFetch(url, options) {
@@ -410,10 +422,12 @@ googleSignInBtn.addEventListener("click", () => {
     google.accounts.oauth2.revoke(driveAccessToken, () => {});
     driveAccessToken = null;
     driveFileId = null;
+    localStorage.removeItem(DRIVE_SIGNED_IN_KEY);
     googleSignInBtn.textContent = "Sign in with Google";
     setSyncStatus("Not signed in (local only)");
     return;
   }
+  driveSilentAttempt = false;
   driveTokenClient.requestAccessToken({ prompt: "consent" });
 });
 
