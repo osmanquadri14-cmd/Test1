@@ -280,76 +280,88 @@ buyMilesBtn.addEventListener("click", () => {
 });
 
 // --- Google Drive sync ---
-// Fill in your own OAuth Client ID from Google Cloud Console (see setup steps
-// in the project README). Files are stored with the narrow "drive.file"
-// scope, so this app can only see files it creates itself.
+// Fill in your OAuth Client ID and your deployed Cloudflare Worker URL (see
+// worker/README.md for setup steps). The worker holds the Google client
+// secret and exchanges/refreshes tokens server-side, so this app can stay
+// signed in indefinitely instead of needing a fresh sign-in every reload.
+// Files are stored with the narrow "drive.file" scope, so this app can only
+// see files it creates itself.
 const GOOGLE_CLIENT_ID = "11908733287-cm8pgih380qlm2lahepntsdsmcpd964t.apps.googleusercontent.com";
+const DRIVE_WORKER_URL = "YOUR_CLOUDFLARE_WORKER_URL";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const DRIVE_FILE_NAME = "lease-mileage-tracker-data.json";
-const DRIVE_SIGNED_IN_KEY = "leaseMileageTracker.driveSignedIn";
+const DRIVE_REFRESH_TOKEN_KEY = "leaseMileageTracker.driveRefreshToken";
 
 let driveAccessToken = null;
 let driveFileId = null;
-let driveTokenClient = null;
 let driveSyncTimer = null;
-let driveSilentAttempt = false;
 
 function setSyncStatus(text) {
   syncStatusEl.textContent = text;
 }
 
 function isGoogleConfigured() {
-  return !GOOGLE_CLIENT_ID.startsWith("YOUR_");
+  return !GOOGLE_CLIENT_ID.startsWith("YOUR_") && !DRIVE_WORKER_URL.startsWith("YOUR_");
 }
 
-function initGoogleAuth(attempt) {
-  attempt = attempt || 0;
-  if (!isGoogleConfigured()) return;
-  if (!window.google || !google.accounts || !google.accounts.oauth2) {
-    if (attempt >= 50) {
-      setSyncStatus("Google sign-in unavailable (script blocked?)");
-      googleSignInBtn.disabled = true;
-      return;
-    }
-    setTimeout(() => initGoogleAuth(attempt + 1), 200);
-    return;
-  }
-  driveTokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: GOOGLE_CLIENT_ID,
-    scope: DRIVE_SCOPE,
-    callback: async (response) => {
-      const wasSilent = driveSilentAttempt;
-      driveSilentAttempt = false;
-      if (response.error) {
-        if (!wasSilent) setSyncStatus("Google sign-in failed");
-        else setSyncStatus("Not signed in (local only)");
-        localStorage.removeItem(DRIVE_SIGNED_IN_KEY);
-        return;
-      }
-      driveAccessToken = response.access_token;
-      localStorage.setItem(DRIVE_SIGNED_IN_KEY, "true");
-      googleSignInBtn.textContent = "Sign out";
-      setSyncStatus("Syncing…");
-      try {
-        await loadFromDrive();
-        setSyncStatus("Synced with Google Drive");
-      } catch (err) {
-        setSyncStatus("Drive sync failed — will retry");
-      }
-    },
-  });
+function isDriveConnected() {
+  return !!localStorage.getItem(DRIVE_REFRESH_TOKEN_KEY);
+}
 
-  if (localStorage.getItem(DRIVE_SIGNED_IN_KEY) === "true") {
-    driveSilentAttempt = true;
-    driveTokenClient.requestAccessToken({ prompt: "" });
+function startGoogleSignIn() {
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: `${DRIVE_WORKER_URL}/oauth/callback`,
+    response_type: "code",
+    scope: DRIVE_SCOPE,
+    access_type: "offline",
+    prompt: "consent",
+  });
+  window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+}
+
+function consumeDriveRedirectHash() {
+  const prefix = "#drive_refresh_token=";
+  if (!location.hash.startsWith(prefix)) return false;
+  const token = decodeURIComponent(location.hash.slice(prefix.length));
+  localStorage.setItem(DRIVE_REFRESH_TOKEN_KEY, token);
+  history.replaceState(null, "", location.pathname + location.search);
+  return true;
+}
+
+async function refreshAccessToken() {
+  const refreshToken = localStorage.getItem(DRIVE_REFRESH_TOKEN_KEY);
+  if (!refreshToken) {
+    driveAccessToken = null;
+    return null;
   }
+  const res = await fetch(`${DRIVE_WORKER_URL}/oauth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!res.ok) {
+    localStorage.removeItem(DRIVE_REFRESH_TOKEN_KEY);
+    driveAccessToken = null;
+    return null;
+  }
+  const data = await res.json();
+  driveAccessToken = data.access_token;
+  return driveAccessToken;
 }
 
 async function driveFetch(url, options) {
-  const res = await fetch(url, {
-    ...options,
-    headers: { ...(options && options.headers), Authorization: `Bearer ${driveAccessToken}` },
+  if (!driveAccessToken) await refreshAccessToken();
+  const withAuth = (opts) => ({
+    ...opts,
+    headers: { ...(opts && opts.headers), Authorization: `Bearer ${driveAccessToken}` },
   });
+
+  let res = await fetch(url, withAuth(options));
+  if (res.status === 401) {
+    await refreshAccessToken();
+    res = await fetch(url, withAuth(options));
+  }
   if (!res.ok) throw new Error(`Drive API error ${res.status}`);
   return res;
 }
@@ -377,7 +389,6 @@ async function loadFromDrive() {
 }
 
 async function pushToDrive() {
-  if (!driveAccessToken) return;
   const body = JSON.stringify({
     settings: loadSettings(),
     entries: loadEntries(),
@@ -406,7 +417,7 @@ async function pushToDrive() {
 }
 
 function scheduleDriveSync() {
-  if (!driveAccessToken) return;
+  if (!isDriveConnected()) return;
   clearTimeout(driveSyncTimer);
   driveSyncTimer = setTimeout(() => {
     pushToDrive().catch(() => setSyncStatus("Drive sync failed — will retry"));
@@ -415,21 +426,45 @@ function scheduleDriveSync() {
 
 googleSignInBtn.addEventListener("click", () => {
   if (!isGoogleConfigured()) {
-    alert("Google sign-in isn't set up yet — add a GOOGLE_CLIENT_ID in app.js first.");
+    alert("Google sign-in isn't set up yet — see worker/README.md for setup steps.");
     return;
   }
-  if (driveAccessToken) {
-    google.accounts.oauth2.revoke(driveAccessToken, () => {});
+  if (isDriveConnected()) {
+    localStorage.removeItem(DRIVE_REFRESH_TOKEN_KEY);
     driveAccessToken = null;
     driveFileId = null;
-    localStorage.removeItem(DRIVE_SIGNED_IN_KEY);
     googleSignInBtn.textContent = "Sign in with Google";
     setSyncStatus("Not signed in (local only)");
     return;
   }
-  driveSilentAttempt = false;
-  driveTokenClient.requestAccessToken({ prompt: "consent" });
+  startGoogleSignIn();
 });
+
+async function initDriveSync() {
+  if (!isGoogleConfigured()) {
+    googleSignInBtn.disabled = true;
+    setSyncStatus("Google sync not set up");
+    return;
+  }
+
+  consumeDriveRedirectHash();
+
+  if (!isDriveConnected()) {
+    setSyncStatus("Not signed in (local only)");
+    return;
+  }
+
+  googleSignInBtn.textContent = "Sign out";
+  setSyncStatus("Syncing…");
+  try {
+    await refreshAccessToken();
+    if (!driveAccessToken) throw new Error("Could not refresh access token");
+    await loadFromDrive();
+    setSyncStatus("Synced with Google Drive");
+  } catch (err) {
+    setSyncStatus("Drive sync failed — will retry");
+  }
+}
 
 function init() {
   entryDateInput.value = todayISO();
@@ -440,13 +475,7 @@ function init() {
     settingsPanel.classList.remove("hidden");
   }
   renderAll();
-
-  if (isGoogleConfigured()) {
-    initGoogleAuth();
-  } else {
-    googleSignInBtn.disabled = true;
-    setSyncStatus("Google sync not set up");
-  }
+  initDriveSync();
 }
 
 init();
