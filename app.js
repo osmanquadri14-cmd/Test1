@@ -28,6 +28,9 @@ const purchasesBody = document.getElementById("purchasesBody");
 const purchasesTable = document.getElementById("purchasesTable");
 const purchasesEmpty = document.getElementById("purchasesEmpty");
 
+const googleSignInBtn = document.getElementById("googleSignInBtn");
+const syncStatusEl = document.getElementById("syncStatus");
+
 function loadSettings() {
   const raw = localStorage.getItem(SETTINGS_KEY);
   return raw ? JSON.parse(raw) : null;
@@ -35,6 +38,7 @@ function loadSettings() {
 
 function saveSettings(settings) {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  scheduleDriveSync();
 }
 
 function loadEntries() {
@@ -44,6 +48,7 @@ function loadEntries() {
 
 function saveEntries(entries) {
   localStorage.setItem(ENTRIES_KEY, JSON.stringify(entries));
+  scheduleDriveSync();
 }
 
 function sortedEntries() {
@@ -59,6 +64,7 @@ function loadPurchases() {
 
 function savePurchases(purchases) {
   localStorage.setItem(PURCHASES_KEY, JSON.stringify(purchases));
+  scheduleDriveSync();
 }
 
 function totalPurchasedMiles() {
@@ -273,6 +279,138 @@ buyMilesBtn.addEventListener("click", () => {
   renderAll();
 });
 
+// --- Google Drive sync ---
+// Fill in your own OAuth Client ID from Google Cloud Console (see setup steps
+// in the project README). Files are stored with the narrow "drive.file"
+// scope, so this app can only see files it creates itself.
+const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_OAUTH_CLIENT_ID.apps.googleusercontent.com";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const DRIVE_FILE_NAME = "lease-mileage-tracker-data.json";
+
+let driveAccessToken = null;
+let driveFileId = null;
+let driveTokenClient = null;
+let driveSyncTimer = null;
+
+function setSyncStatus(text) {
+  syncStatusEl.textContent = text;
+}
+
+function isGoogleConfigured() {
+  return !GOOGLE_CLIENT_ID.startsWith("YOUR_");
+}
+
+function initGoogleAuth() {
+  if (!isGoogleConfigured()) return;
+  if (!window.google || !google.accounts || !google.accounts.oauth2) {
+    setTimeout(initGoogleAuth, 200);
+    return;
+  }
+  driveTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: DRIVE_SCOPE,
+    callback: async (response) => {
+      if (response.error) {
+        setSyncStatus("Google sign-in failed");
+        return;
+      }
+      driveAccessToken = response.access_token;
+      googleSignInBtn.textContent = "Sign out";
+      setSyncStatus("Syncing…");
+      try {
+        await loadFromDrive();
+        setSyncStatus("Synced with Google Drive");
+      } catch (err) {
+        setSyncStatus("Drive sync failed — will retry");
+      }
+    },
+  });
+}
+
+async function driveFetch(url, options) {
+  const res = await fetch(url, {
+    ...options,
+    headers: { ...(options && options.headers), Authorization: `Bearer ${driveAccessToken}` },
+  });
+  if (!res.ok) throw new Error(`Drive API error ${res.status}`);
+  return res;
+}
+
+async function findDriveFile() {
+  const q = encodeURIComponent(`name='${DRIVE_FILE_NAME}' and trashed=false`);
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`);
+  const data = await res.json();
+  return data.files && data.files.length ? data.files[0].id : null;
+}
+
+async function loadFromDrive() {
+  driveFileId = await findDriveFile();
+  if (!driveFileId) {
+    await pushToDrive();
+    return;
+  }
+  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`);
+  const remote = await res.json();
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(remote.settings || null));
+  localStorage.setItem(ENTRIES_KEY, JSON.stringify(remote.entries || []));
+  localStorage.setItem(PURCHASES_KEY, JSON.stringify(remote.purchases || []));
+  fillSettingsForm(loadSettings());
+  renderAll();
+}
+
+async function pushToDrive() {
+  if (!driveAccessToken) return;
+  const body = JSON.stringify({
+    settings: loadSettings(),
+    entries: loadEntries(),
+    purchases: loadPurchases(),
+  });
+
+  if (driveFileId) {
+    await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=media`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+  } else {
+    const metadata = { name: DRIVE_FILE_NAME, mimeType: "application/json" };
+    const form = new FormData();
+    form.append("metadata", new Blob([JSON.stringify(metadata)], { type: "application/json" }));
+    form.append("file", new Blob([body], { type: "application/json" }));
+    const res = await driveFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
+      method: "POST",
+      body: form,
+    });
+    const data = await res.json();
+    driveFileId = data.id;
+  }
+  setSyncStatus("Synced with Google Drive");
+}
+
+function scheduleDriveSync() {
+  if (!driveAccessToken) return;
+  clearTimeout(driveSyncTimer);
+  driveSyncTimer = setTimeout(() => {
+    pushToDrive().catch(() => setSyncStatus("Drive sync failed — will retry"));
+  }, 800);
+}
+
+googleSignInBtn.addEventListener("click", () => {
+  if (!isGoogleConfigured()) {
+    alert("Google sign-in isn't set up yet — add a GOOGLE_CLIENT_ID in app.js first.");
+    return;
+  }
+  if (driveAccessToken) {
+    google.accounts.oauth2.revoke(driveAccessToken, () => {});
+    driveAccessToken = null;
+    driveFileId = null;
+    googleSignInBtn.textContent = "Sign in with Google";
+    setSyncStatus("Not signed in (local only)");
+    return;
+  }
+  driveTokenClient.requestAccessToken({ prompt: "consent" });
+});
+
 function init() {
   entryDateInput.value = todayISO();
   const settings = loadSettings();
@@ -282,6 +420,13 @@ function init() {
     settingsPanel.classList.remove("hidden");
   }
   renderAll();
+
+  if (isGoogleConfigured()) {
+    initGoogleAuth();
+  } else {
+    googleSignInBtn.disabled = true;
+    setSyncStatus("Google sync not set up");
+  }
 }
 
 init();

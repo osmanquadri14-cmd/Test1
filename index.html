@@ -5,12 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Lease Mileage Tracker</title>
 <link rel="stylesheet" href="style.css">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <div class="app">
   <header>
     <h1>Lease Mileage Tracker</h1>
-    <button id="settingsToggle" class="ghost-btn" type="button">Lease settings</button>
+    <div class="header-actions">
+      <span id="syncStatus" class="sync-status">Not signed in (local only)</span>
+      <button id="googleSignInBtn" class="ghost-btn" type="button">Sign in with Google</button>
+      <button id="settingsToggle" class="ghost-btn" type="button">Lease settings</button>
+    </div>
   </header>
 
   <section id="settingsPanel" class="card hidden">
